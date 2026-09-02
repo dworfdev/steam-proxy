@@ -1,5 +1,4 @@
 const express = require('express');
-const { HttpsProxyAgent } = require('https-proxy-agent');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7,7 +6,19 @@ const INTERNAL_SECRET = process.env.INTERNAL_PROXY_SECRET;
 const PROXY_URL = process.env.RESIDENTIAL_PROXY_URL;
 const STEAM_ID_PATTERN = /^\d{5,20}$/;
 
-const agent = PROXY_URL ? new HttpsProxyAgent(PROXY_URL) : null;
+let agent = null;
+
+// Динамически загружаем ESM модуль https-proxy-agent
+if (PROXY_URL) {
+  import('https-proxy-agent')
+      .then(({ HttpsProxyAgent }) => {
+        agent = new HttpsProxyAgent(PROXY_URL);
+        console.log('[SYSTEM] HttpsProxyAgent initialized successfully');
+      })
+      .catch((err) => {
+        console.error('[SYSTEM] Failed to load HttpsProxyAgent:', err.message);
+      });
+}
 
 const log = (type, message, details = '') => {
   const time = new Date().toISOString();
@@ -37,13 +48,18 @@ app.get('/inventory/:steamId', async (req, res) => {
   log('OUTGOING', `Fetching directly from Steam via Residential Proxy...`);
 
   try {
-    const steamRes = await fetch(steamUrl, {
-      agent,
+    const fetchOptions = {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*'
       }
-    });
+    };
+
+    if (agent) {
+      fetchOptions.agent = agent;
+    }
+
+    const steamRes = await fetch(steamUrl, fetchOptions);
 
     const duration = Date.now() - startTime;
     log('STEAM_RESPONSE', `Steam replied in ${duration}ms | HTTP Status: ${steamRes.status}`);
@@ -75,5 +91,5 @@ app.get('/inventory/:steamId', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  log('SYSTEM', `Proxy service running on port ${PORT}. Residential proxy active: ${!!agent}`);
+  log('SYSTEM', `Proxy service running on port ${PORT}.`);
 });
