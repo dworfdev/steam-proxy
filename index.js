@@ -7,18 +7,24 @@ const INTERNAL_SECRET = process.env.INTERNAL_PROXY_SECRET;
 const PROXY_URL = process.env.RESIDENTIAL_PROXY_URL;
 const STEAM_ID_PATTERN = /^\d{5,20}$/;
 
-let HttpsProxyAgentModule = null;
-
-// Динамически загружаем ESM модуль https-proxy-agent
+// Парсим переменные прокси напрямую из строки
+let proxyConfig = false;
 if (PROXY_URL) {
-  import('https-proxy-agent')
-      .then((module) => {
-        HttpsProxyAgentModule = module.HttpsProxyAgent;
-        console.log('[SYSTEM] HttpsProxyAgent module loaded successfully');
-      })
-      .catch((err) => {
-        console.error('[SYSTEM] Failed to load HttpsProxyAgent:', err.message);
-      });
+  try {
+    const parsedUrl = new URL(PROXY_URL);
+    proxyConfig = {
+      protocol: parsedUrl.protocol.replace(':', ''),
+      host: parsedUrl.hostname,
+      port: parseInt(parsedUrl.port, 10) || 80,
+      auth: parsedUrl.username ? {
+        username: decodeURIComponent(parsedUrl.username),
+        password: decodeURIComponent(parsedUrl.password)
+      } : undefined
+    };
+    console.log('[SYSTEM] Proxy config parsed successfully:', proxyConfig.host);
+  } catch (e) {
+    console.error('[SYSTEM] Failed to parse PROXY_URL:', e.message);
+  }
 }
 
 const log = (type, message, details = '') => {
@@ -27,7 +33,7 @@ const log = (type, message, details = '') => {
 };
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', proxyActive: !!HttpsProxyAgentModule });
+  res.json({ status: 'ok', proxyActive: !!proxyConfig });
 });
 
 app.get('/inventory/:steamId', async (req, res) => {
@@ -46,26 +52,22 @@ app.get('/inventory/:steamId', async (req, res) => {
   }
 
   const steamUrl = `https://steamcommunity.com/inventory/${steamId}/730/2?l=english`;
-  log('OUTGOING', `Fetching directly from Steam via Residential Proxy...`);
+  log('OUTGOING', `Fetching directly from Steam via Webshare...`);
 
   try {
-    const axiosConfig = {
+    const axiosOptions = {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*'
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9'
       },
-      timeout: 10000
+      timeout: 15000,
+      proxy: proxyConfig // Передаем нативный конфиг Axios
     };
 
-    if (PROXY_URL && HttpsProxyAgentModule) {
-      const agent = new HttpsProxyAgentModule(PROXY_URL);
-      axiosConfig.httpsAgent = agent;
-      axiosConfig.httpAgent = agent;
-    }
-
-    const steamRes = await axios.get(steamUrl, axiosConfig);
-
+    const steamRes = await axios.get(steamUrl, axiosOptions);
     const duration = Date.now() - startTime;
+
     log('STEAM_RESPONSE', `Steam replied in ${duration}ms | HTTP Status: ${steamRes.status}`);
 
     if (steamRes.data === null) {
@@ -85,7 +87,7 @@ app.get('/inventory/:steamId', async (req, res) => {
       return res.status(err.response.status).json({ error: `Steam returned status ${err.response.status}` });
     }
     log('ERROR', `Exception after ${duration}ms: ${err.message}`);
-    return res.status(502).json({ error: 'Failed to reach Steam servers' });
+    return res.status(502).json({ error: `Failed to reach Steam servers: ${err.message}` });
   }
 });
 
