@@ -1,4 +1,5 @@
 const express = require('express');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -6,14 +7,14 @@ const INTERNAL_SECRET = process.env.INTERNAL_PROXY_SECRET;
 const PROXY_URL = process.env.RESIDENTIAL_PROXY_URL;
 const STEAM_ID_PATTERN = /^\d{5,20}$/;
 
-let agent = null;
+let HttpsProxyAgentModule = null;
 
 // Динамически загружаем ESM модуль https-proxy-agent
 if (PROXY_URL) {
   import('https-proxy-agent')
-      .then(({ HttpsProxyAgent }) => {
-        agent = new HttpsProxyAgent(PROXY_URL);
-        console.log('[SYSTEM] HttpsProxyAgent initialized successfully');
+      .then((module) => {
+        HttpsProxyAgentModule = module.HttpsProxyAgent;
+        console.log('[SYSTEM] HttpsProxyAgent module loaded successfully');
       })
       .catch((err) => {
         console.error('[SYSTEM] Failed to load HttpsProxyAgent:', err.message);
@@ -26,7 +27,7 @@ const log = (type, message, details = '') => {
 };
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', proxyActive: !!agent });
+  res.json({ status: 'ok', proxyActive: !!HttpsProxyAgentModule });
 });
 
 app.get('/inventory/:steamId', async (req, res) => {
@@ -48,43 +49,41 @@ app.get('/inventory/:steamId', async (req, res) => {
   log('OUTGOING', `Fetching directly from Steam via Residential Proxy...`);
 
   try {
-    const fetchOptions = {
+    const axiosConfig = {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*'
-      }
+      },
+      timeout: 10000
     };
 
-    if (agent) {
-      fetchOptions.agent = agent;
+    if (PROXY_URL && HttpsProxyAgentModule) {
+      const agent = new HttpsProxyAgentModule(PROXY_URL);
+      axiosConfig.httpsAgent = agent;
+      axiosConfig.httpAgent = agent;
     }
 
-    const steamRes = await fetch(steamUrl, fetchOptions);
+    const steamRes = await axios.get(steamUrl, axiosConfig);
 
     const duration = Date.now() - startTime;
     log('STEAM_RESPONSE', `Steam replied in ${duration}ms | HTTP Status: ${steamRes.status}`);
 
-    const text = await steamRes.text();
-
-    if (!steamRes.ok) {
-      log('ERROR', `Steam returned non-200 code: ${steamRes.status}`, { snippet: text.substring(0, 200) });
-      return res.status(steamRes.status).json({ error: `Steam returned status ${steamRes.status}` });
-    }
-
-    const data = JSON.parse(text);
-
-    if (data === null) {
+    if (steamRes.data === null) {
       return res.status(200).json({ assets: [], descriptions: [], total_inventory_count: 0 });
     }
 
     log('SUCCESS', `Successfully fetched inventory for ${steamId}`, {
-      assetsCount: data.assets ? data.assets.length : 0
+      assetsCount: steamRes.data.assets ? steamRes.data.assets.length : 0
     });
 
-    return res.status(200).json(data);
+    return res.status(200).json(steamRes.data);
 
   } catch (err) {
     const duration = Date.now() - startTime;
+    if (err.response) {
+      log('ERROR', `Steam returned status ${err.response.status}`);
+      return res.status(err.response.status).json({ error: `Steam returned status ${err.response.status}` });
+    }
     log('ERROR', `Exception after ${duration}ms: ${err.message}`);
     return res.status(502).json({ error: 'Failed to reach Steam servers' });
   }
