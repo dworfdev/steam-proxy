@@ -8,7 +8,8 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "https-proxy-agent": "^9.1.0"
   },
   "engines": {
     "node": ">=18"

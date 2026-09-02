@@ -1,99 +1,79 @@
 const express = require('express');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const INTERNAL_SECRET = process.env.INTERNAL_PROXY_SECRET;
-const STEAM_WEB_API_KEY = process.env.STEAM_WEB_API_KEY; // Добавляем переменный ключ API
+const PROXY_URL = process.env.RESIDENTIAL_PROXY_URL;
 const STEAM_ID_PATTERN = /^\d{5,20}$/;
 
-// Вспомогательный форматирует логов
+const agent = PROXY_URL ? new HttpsProxyAgent(PROXY_URL) : null;
+
 const log = (type, message, details = '') => {
   const time = new Date().toISOString();
   console.log(`[${time}] [${type}] ${message}`, details ? JSON.stringify(details) : '');
 };
 
 app.get('/health', (req, res) => {
-  log('INFO', 'Health check requested');
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', proxyActive: !!agent });
 });
 
 app.get('/inventory/:steamId', async (req, res) => {
   const { steamId } = req.params;
   const startTime = Date.now();
 
-  log('INCOMING', `New inventory request for steamId: ${steamId}`);
+  log('INCOMING', `Inventory request for steamId: ${steamId}`);
 
-  // 1. Проверка авторизации
-  if (INTERNAL_SECRET) {
-    const provided = req.header('X-Internal-Secret');
-    if (provided !== INTERNAL_SECRET) {
-      log('WARN', `AUTH FAILED for steamId: ${steamId}. Provided secret: "${provided || 'NONE'}"`);
-      return res.status(401).json({ error: 'Unauthorized: Shared secret mismatch or missing' });
-    }
-    log('INFO', `AUTH SUCCESS for steamId: ${steamId}`);
-  } else {
-    log('WARN', 'INTERNAL_PROXY_SECRET is not set on proxy server! Skipping secret verification.');
+  if (INTERNAL_SECRET && req.header('X-Internal-Secret') !== INTERNAL_SECRET) {
+    log('WARN', `AUTH FAILED for steamId: ${steamId}`);
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  // 2. Валидация SteamID
   if (!STEAM_ID_PATTERN.test(steamId)) {
-    log('WARN', `INVALID STEAMID FORMAT: ${steamId}`);
     return res.status(400).json({ error: 'Invalid steamId format' });
   }
 
-  // Проверка наличия API-ключа
-  const apiKey = STEAM_WEB_API_KEY || 'A6I5L6F6G2JN483T'; // Ключ из переменной или fallback
-  const apiUrl = `https://www.steamwebapi.com/steam/api/inventory?key=${apiKey}&steam_id=${steamId}&game=cs2`;
-
-  log('OUTGOING', `Fetching from SteamWebAPI for steamId: ${steamId}`);
+  const steamUrl = `https://steamcommunity.com/inventory/${steamId}/730/2?l=english`;
+  log('OUTGOING', `Fetching directly from Steam via Residential Proxy...`);
 
   try {
-    // 3. Запрос к SteamWebAPI
-    const apiRes = await fetch(apiUrl);
+    const steamRes = await fetch(steamUrl, {
+      agent,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*'
+      }
+    });
+
     const duration = Date.now() - startTime;
-    log('PROXY_RESPONSE', `SteamWebAPI replied in ${duration}ms | HTTP Status: ${apiRes.status}`);
+    log('STEAM_RESPONSE', `Steam replied in ${duration}ms | HTTP Status: ${steamRes.status}`);
 
-    const text = await apiRes.text();
+    const text = await steamRes.text();
 
-    if (!apiRes.ok) {
-      log('ERROR', `SteamWebAPI returned non-200 code: ${apiRes.status}`, {
-        status: apiRes.status,
-        bodySnippet: text.substring(0, 300)
-      });
-      return res.status(apiRes.status).json({
-        error: `SteamWebAPI returned status ${apiRes.status}`,
-        status: apiRes.status
-      });
+    if (!steamRes.ok) {
+      log('ERROR', `Steam returned non-200 code: ${steamRes.status}`, { snippet: text.substring(0, 200) });
+      return res.status(steamRes.status).json({ error: `Steam returned status ${steamRes.status}` });
     }
 
-    // 4. Парсинг JSON
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch (parseErr) {
-      log('ERROR', `Failed to parse JSON for steamId: ${steamId}`, {
-        error: parseErr.message,
-        rawSnippet: text.substring(0, 200)
-      });
-      return res.status(502).json({ error: 'SteamWebAPI returned non-JSON payload' });
+    const data = JSON.parse(text);
+
+    if (data === null) {
+      return res.status(200).json({ assets: [], descriptions: [], total_inventory_count: 0 });
     }
 
-    log('SUCCESS', `Successfully retrieved inventory via SteamWebAPI for steamId: ${steamId}`, {
-      itemsCount: Array.isArray(data) ? data.length : 'N/A'
+    log('SUCCESS', `Successfully fetched inventory for ${steamId}`, {
+      assetsCount: data.assets ? data.assets.length : 0
     });
 
     return res.status(200).json(data);
 
   } catch (err) {
     const duration = Date.now() - startTime;
-    log('ERROR', `Network Exception while reaching SteamWebAPI after ${duration}ms`, {
-      message: err.message,
-      stack: err.stack
-    });
-    return res.status(502).json({ error: 'Failed to reach SteamWebAPI servers' });
+    log('ERROR', `Exception after ${duration}ms: ${err.message}`);
+    return res.status(502).json({ error: 'Failed to reach Steam servers' });
   }
 });
 
 app.listen(PORT, () => {
-  log('SYSTEM', `Steam inventory proxy listening on port ${PORT}`);
+  log('SYSTEM', `Proxy service running on port ${PORT}. Residential proxy active: ${!!agent}`);
 });
