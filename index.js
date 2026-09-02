@@ -3,9 +3,10 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const INTERNAL_SECRET = process.env.INTERNAL_PROXY_SECRET;
+const STEAM_WEB_API_KEY = process.env.STEAM_WEB_API_KEY; // Добавляем переменный ключ API
 const STEAM_ID_PATTERN = /^\d{5,20}$/;
 
-// Вспомогательный форматир логов
+// Вспомогательный форматирует логов
 const log = (type, message, details = '') => {
   const time = new Date().toISOString();
   console.log(`[${time}] [${type}] ${message}`, details ? JSON.stringify(details) : '');
@@ -40,70 +41,56 @@ app.get('/inventory/:steamId', async (req, res) => {
     return res.status(400).json({ error: 'Invalid steamId format' });
   }
 
-  const steamUrl = `https://steamcommunity.com/inventory/${steamId}/730/2?l=english`;
-  log('OUTGOING', `Fetching from Steam: ${steamUrl}`);
+  // Проверка наличия API-ключа
+  const apiKey = STEAM_WEB_API_KEY || 'A6I5L6F6G2JN483T'; // Ключ из переменной или fallback
+  const apiUrl = `https://www.steamwebapi.com/steam/api/inventory?key=${apiKey}&steam_id=${steamId}&game=cs2`;
+
+  log('OUTGOING', `Fetching from SteamWebAPI for steamId: ${steamId}`);
 
   try {
-    // 3. Запрос в Steam
-    const steamRes = await fetch(steamUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*'
-      }
-    });
-
+    // 3. Запрос к SteamWebAPI
+    const apiRes = await fetch(apiUrl);
     const duration = Date.now() - startTime;
-    log('STEAM_RESPONSE', `Steam replied in ${duration}ms | HTTP Status: ${steamRes.status}`);
+    log('PROXY_RESPONSE', `SteamWebAPI replied in ${duration}ms | HTTP Status: ${apiRes.status}`);
 
-    const text = await steamRes.text();
+    const text = await apiRes.text();
 
-    // 4. Проверка статуса ответа Steam
-    if (!steamRes.ok) {
-      log('ERROR', `Steam returned non-200 code: ${steamRes.status} for steamId: ${steamId}`, {
-        status: steamRes.status,
+    if (!apiRes.ok) {
+      log('ERROR', `SteamWebAPI returned non-200 code: ${apiRes.status}`, {
+        status: apiRes.status,
         bodySnippet: text.substring(0, 300)
       });
-      return res.status(steamRes.status).json({
-        error: `Steam returned status ${steamRes.status}`,
-        steamStatus: steamRes.status
+      return res.status(apiRes.status).json({
+        error: `SteamWebAPI returned status ${apiRes.status}`,
+        status: apiRes.status
       });
     }
 
-    // 5. Парсинг JSON
+    // 4. Парсинг JSON
     let data;
     try {
       data = JSON.parse(text);
     } catch (parseErr) {
-      log('ERROR', `Failed to parse Steam JSON for steamId: ${steamId}`, {
+      log('ERROR', `Failed to parse JSON for steamId: ${steamId}`, {
         error: parseErr.message,
         rawSnippet: text.substring(0, 200)
       });
-      return res.status(502).json({ error: 'Steam returned non-JSON payload' });
+      return res.status(502).json({ error: 'SteamWebAPI returned non-JSON payload' });
     }
 
-    if (data === null) {
-      log('INFO', `Steam returned null body for steamId: ${steamId} (Private profile or empty)`);
-      return res.status(200).json({ assets: [], descriptions: [], total_inventory_count: 0 });
-    }
-
-    const assetsCount = data.assets ? data.assets.length : 0;
-    const descCount = data.descriptions ? data.descriptions.length : 0;
-
-    log('SUCCESS', `Successfully retrieved inventory for steamId: ${steamId}`, {
-      assetsCount,
-      descCount,
-      totalCount: data.total_inventory_count
+    log('SUCCESS', `Successfully retrieved inventory via SteamWebAPI for steamId: ${steamId}`, {
+      itemsCount: Array.isArray(data) ? data.length : 'N/A'
     });
 
     return res.status(200).json(data);
 
   } catch (err) {
     const duration = Date.now() - startTime;
-    log('ERROR', `Network Exception while reaching Steam after ${duration}ms`, {
+    log('ERROR', `Network Exception while reaching SteamWebAPI after ${duration}ms`, {
       message: err.message,
       stack: err.stack
     });
-    return res.status(502).json({ error: 'Failed to reach Steam servers' });
+    return res.status(502).json({ error: 'Failed to reach SteamWebAPI servers' });
   }
 });
 
