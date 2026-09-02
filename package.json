@@ -1,0 +1,16 @@
+{
+  "name": "steam-inventory-proxy",
+  "version": "1.0.0",
+  "description": "Small proxy service that fetches Steam inventories using Node's fetch (which passes Steam's bot detection, unlike the Java backend's TLS fingerprint).",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
