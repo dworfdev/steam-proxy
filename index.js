@@ -7,21 +7,38 @@ const INTERNAL_SECRET = process.env.INTERNAL_PROXY_SECRET;
 const PROXY_URL = process.env.RESIDENTIAL_PROXY_URL;
 const STEAM_ID_PATTERN = /^\d{5,20}$/;
 
-// Парсим переменные прокси напрямую из строки
 let proxyConfig = false;
+
 if (PROXY_URL) {
   try {
-    const parsedUrl = new URL(PROXY_URL);
-    proxyConfig = {
-      protocol: parsedUrl.protocol.replace(':', ''),
-      host: parsedUrl.hostname,
-      port: parseInt(parsedUrl.port, 10) || 80,
-      auth: parsedUrl.username ? {
-        username: decodeURIComponent(parsedUrl.username),
-        password: decodeURIComponent(parsedUrl.password)
-      } : undefined
-    };
-    console.log('[SYSTEM] Proxy config parsed successfully:', proxyConfig.host);
+    // Очищаем протокол, если он передан
+    const cleanProxy = PROXY_URL.replace(/^https?:\/\//, '');
+
+    // Вытаскиваем логин, пароль, хост и порт через регулярку (чтобы @ в пароле не ломал парсер)
+    const lastAtIdx = cleanProxy.lastIndexOf('@');
+
+    if (lastAtIdx !== -1) {
+      const authPart = cleanProxy.substring(0, lastAtIdx);
+      const hostPart = cleanProxy.substring(lastAtIdx + 1);
+
+      const [username, ...passParts] = authPart.split(':');
+      const password = passParts.join(':'); // на случай : в пароле
+
+      const [host, port] = hostPart.split(':');
+
+      proxyConfig = {
+        protocol: 'http',
+        host: host,
+        port: parseInt(port, 10) || 80,
+        auth: {
+          username: username,
+          password: password
+        }
+      };
+      console.log(`[SYSTEM] Proxy configured for host: ${host}:${port} | User: ${username}`);
+    } else {
+      console.error('[SYSTEM] Invalid PROXY_URL format. Missing auth credentials or @ separator.');
+    }
   } catch (e) {
     console.error('[SYSTEM] Failed to parse PROXY_URL:', e.message);
   }
@@ -61,9 +78,12 @@ app.get('/inventory/:steamId', async (req, res) => {
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9'
       },
-      timeout: 15000,
-      proxy: proxyConfig // Передаем нативный конфиг Axios
+      timeout: 15000
     };
+
+    if (proxyConfig) {
+      axiosOptions.proxy = proxyConfig;
+    }
 
     const steamRes = await axios.get(steamUrl, axiosOptions);
     const duration = Date.now() - startTime;
