@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const { HttpProxyAgent, HttpsProxyAgent } = require('hpagent');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7,40 +8,22 @@ const INTERNAL_SECRET = process.env.INTERNAL_PROXY_SECRET;
 const PROXY_URL = process.env.RESIDENTIAL_PROXY_URL;
 const STEAM_ID_PATTERN = /^\d{5,20}$/;
 
-let proxyConfig = false;
+let httpsAgent = null;
 
 if (PROXY_URL) {
   try {
-    // Очищаем протокол, если он передан
-    const cleanProxy = PROXY_URL.replace(/^https?:\/\//, '');
+    // В Vercel ENV обязательно передаем полный URL: http://user:pass@host:port
+    const parsedProxy = new URL(PROXY_URL);
 
-    // Вытаскиваем логин, пароль, хост и порт через регулярку (чтобы @ в пароле не ломал парсер)
-    const lastAtIdx = cleanProxy.lastIndexOf('@');
+    httpsAgent = new HttpsProxyAgent({
+      proxy: parsedProxy.href,
+      keepAlive: true,
+      timeout: 10000
+    });
 
-    if (lastAtIdx !== -1) {
-      const authPart = cleanProxy.substring(0, lastAtIdx);
-      const hostPart = cleanProxy.substring(lastAtIdx + 1);
-
-      const [username, ...passParts] = authPart.split(':');
-      const password = passParts.join(':'); // на случай : в пароле
-
-      const [host, port] = hostPart.split(':');
-
-      proxyConfig = {
-        protocol: 'http',
-        host: host,
-        port: parseInt(port, 10) || 80,
-        auth: {
-          username: username,
-          password: password
-        }
-      };
-      console.log(`[SYSTEM] Proxy configured for host: ${host}:${port} | User: ${username}`);
-    } else {
-      console.error('[SYSTEM] Invalid PROXY_URL format. Missing auth credentials or @ separator.');
-    }
+    console.log(`[SYSTEM] Proxy Agent ready for host: ${parsedProxy.host}`);
   } catch (e) {
-    console.error('[SYSTEM] Failed to parse PROXY_URL:', e.message);
+    console.error('[SYSTEM] Failed to parse PROXY_URL. Check if it starts with http:// ->', e.message);
   }
 }
 
@@ -50,7 +33,7 @@ const log = (type, message, details = '') => {
 };
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', proxyActive: !!proxyConfig });
+  res.json({ status: 'ok', proxyActive: !!httpsAgent });
 });
 
 app.get('/inventory/:steamId', async (req, res) => {
@@ -69,20 +52,21 @@ app.get('/inventory/:steamId', async (req, res) => {
   }
 
   const steamUrl = `https://steamcommunity.com/inventory/${steamId}/730/2?l=english`;
-  log('OUTGOING', `Fetching directly from Steam via Webshare...`);
 
   try {
     const axiosOptions = {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9'
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache'
       },
-      timeout: 15000
+      timeout: 15000,
+      proxy: false // Нативно отключаем дефолтный прокси Axios, используем httpsAgent
     };
 
-    if (proxyConfig) {
-      axiosOptions.proxy = proxyConfig;
+    if (httpsAgent) {
+      axiosOptions.httpsAgent = httpsAgent;
     }
 
     const steamRes = await axios.get(steamUrl, axiosOptions);
